@@ -11,6 +11,13 @@ import java.util.HashMap;
 import java.util.Map;
 import javax.imageio.ImageIO;
 
+/**
+ * This class generates palette and image binaries for the outrun clone.
+ *
+ * Images are using short words
+ * The first two words are width/2 and height
+ * Each word after that is two pixels. The colors are mapped from the palette.
+ */
 public class PaletteMain {
 
   public static final String TREE_PNG = "tree";
