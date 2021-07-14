@@ -2,6 +2,7 @@ package com.company;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -41,36 +42,127 @@ public class PaletteMain {
 
   public static void main(String... args) throws IOException {
     writePalette();
-    writeTree();
+    writeImages();
 
   }
 
-  private static void writeTree() throws IOException {
+  private static void writeImages() throws IOException {
     for (String fileName : files) {
       var pngImage = ImageIO.read(new File(fileName + ".png"));
       try (var sfxData = new FileOutputStream(fileName + ".bin")) {
-System.out.println(String.format("Converting %s, %d x %d", fileName, pngImage.getWidth(), pngImage.getHeight()));
-        sfxData.write(new byte[]{(byte)(0xFF&pngImage.getWidth()/2), (byte)(0xFF&pngImage.getHeight())});
-        for (int y = 0; y < pngImage.getHeight(); y++) {
-          for (int x = 0; x < pngImage.getWidth(); x++) {
-            var pixelHigh = pngImage.getRGB(x, y) & 0x00FFFFFF;
-            var pixelLow = pngImage.getRGB(++x, y) & 0x00FFFFFF;
-            var indexHigh = colorToIndexMap.get(pixelHigh);
-            var indexLow = colorToIndexMap.get(pixelLow);
-            if (indexHigh == null || indexLow == null) {
-              throw new IllegalStateException(
-                  String.format("null index for color %x ", pixelLow) + String
-                      .format("null index for color %x", pixelHigh) +String.format("For File %s", fileName));
-
-            } else {
-              byte b = (byte) ((indexHigh & 0b1111) << 4 | (indexLow & 0b1111));
-              sfxData.write(new byte[]{b});
-            }
-          }
-        }
+        sfxData.write(getImageBytes(pngImage));
+      } catch (Exception e) {
+        throw new RuntimeException("Error Processing " + fileName, e);
       }
     }
 
+  }
+
+  /**
+   * two bytes, width/2, height
+   * 4 bytes per height [skipLow][skipHigh][pad][length]
+   * Image data. each row found by adding skip to the byte position of skipLow
+   *
+   * @return byteArray of the processed data for the image
+   */
+  private static byte[] getImageBytes(BufferedImage pngImage ) {
+
+    ByteBuffer sfxData = ByteBuffer.allocate(2 + 4 * pngImage.getHeight() + 512*512*8);
+
+    sfxData.order(ByteOrder.LITTLE_ENDIAN);
+
+    var width = (byte)(0xFF&pngImage.getWidth()/2);
+    var height = (byte)(0xFF&pngImage.getHeight());
+    var bitmapStart = height * 4 - 1;
+    //header
+    sfxData.put(new byte[]{width, height});
+
+    //table
+    for (int y = 0; y < pngImage.getHeight(); y++) {
+      sfxData.putShort((short)bitmapStart);
+      var pad = getPadForLine(pngImage, y);
+      var length = getLengthForLine(pngImage, y);
+      bitmapStart += (length - 4);
+      sfxData.put(pad);
+      sfxData.put((byte) length);
+    }
+    //image data
+    for (int y = 0; y < pngImage.getHeight(); y++) {
+      sfxData.put(imageLineBytes(pngImage, y));
+    }
+
+    var outBuffer = ByteBuffer.allocate(sfxData.position());
+    sfxData.flip();
+    outBuffer.put(sfxData);
+
+    return  outBuffer.array();
+  }
+
+  private  static byte[] imageLineBytes(BufferedImage pngImage, int y) {
+
+    var pad = getPadForLine(pngImage, y);
+    var length = getLengthForLine(pngImage, y);
+    var sfxData = new ByteArrayOutputStream();
+    for (int x = pad; x < (pad + length); x++) {
+      try {
+        var pixelHigh = pngImage.getRGB(x, y) & 0x00FFFFFF;
+        var pixelLow = pngImage.getRGB(++x, y) & 0x00FFFFFF;
+
+        var indexHigh = colorToIndexMap.get(pixelHigh);
+        var indexLow = colorToIndexMap.get(pixelLow);
+        if (indexHigh == null || indexLow == null) {
+          throw new IllegalStateException(
+              String.format("null index for color %x ", pixelLow) + String
+                  .format("null index for color %x", pixelHigh));
+
+        } else {
+          byte b = (byte) ((indexHigh & 0b1111) << 4 | (indexLow & 0b1111));
+          sfxData.write(b);
+        }
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+    return sfxData.toByteArray();
+  }
+
+  /**
+   * Length is how many pixels are bytween the leading and trailing blackness
+   * @param pngImage imageData
+   * @param y line
+   * @return length of pixels to draw
+   */
+  private static byte getLengthForLine(BufferedImage pngImage, int y) {
+    byte startImageData = getPadForLine(pngImage, y);
+    byte endImageData = (byte) pngImage.getWidth();
+    for (byte x = (byte) (pngImage.getWidth() - 1); x >= 0; x--) {
+      var pixel = pngImage.getRGB(x, y) & 0x00FFFFFF;
+      if (pixel == 0) {
+        endImageData = x;
+      } else {
+        break;
+      }
+    }
+    return (byte) Math.max(endImageData - startImageData, 0);
+  }
+
+  /**
+   * Pad is how many leading black pixels are in the image
+   * @param pngImage imageData
+   * @param y line
+   * @return number of leading black pixels
+   */
+  private  static byte getPadForLine(BufferedImage pngImage, int y) {
+    byte pad = 0;
+    for (int x = 0; x < pngImage.getWidth(); x++) {
+      var pixel = pngImage.getRGB(x, y) & 0x00FFFFFF;
+      if (pixel == 0) {
+        pad++;
+      } else {
+        break;
+      }
+    }
+    return (byte)(((pad>>1)<<1) & 0xFF);
   }
 
   private static void writePalette() throws IOException {
